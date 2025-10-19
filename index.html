@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>X vs O Betting - Multiplayer</title>
+    <title>X vs O Betting - Timer bilan</title>
     <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
     <style>
@@ -49,6 +49,42 @@
             border-radius: 10px;
             margin-bottom: 20px;
             font-size: 0.9rem;
+        }
+        
+        .timer-section {
+            background: linear-gradient(135deg, #2c3e50, #4a235a);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .timer-display {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .timer-phase {
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+            color: #f39c12;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 10px;
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #2ecc71, #f1c40f);
+            transition: width 1s linear;
         }
         
         .login-section {
@@ -132,7 +168,12 @@
             transition: background-color 0.3s;
         }
         
-        button:hover {
+        button:disabled {
+            background-color: #7f8c8d;
+            cursor: not-allowed;
+        }
+        
+        button:hover:not(:disabled) {
             background-color: #27ae60;
         }
         
@@ -248,16 +289,31 @@
             h1 {
                 font-size: 2rem;
             }
+            
+            .timer-display {
+                font-size: 2rem;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>X vs O Betting - Multiplayer</h1>
+            <h1>X vs O Betting - Timer bilan</h1>
             <div class="rules">
                 <p><strong>Qoidalar:</strong> Pastroq summa to'plagan g'olib - G'oliblar 2X pul yutadi - Teng bo'lsa Admin yutadi</p>
+                <p><strong>Vaqt:</strong> 3 daqiqa betting + 30 soniya tanaffus</p>
             </div>
+            
+            <div class="timer-section">
+                <div class="timer-phase" id="timerPhase">Betting davomiyligi</div>
+                <div class="timer-display" id="timerDisplay">03:00</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill" style="width: 100%"></div>
+                </div>
+                <div id="nextRoundInfo">Keyingi raund: <span id="nextRoundTime">00:30</span> dan keyin</div>
+            </div>
+            
             <div id="loginSection" class="login-section">
                 <h3>O'yinchi nomingizni kiriting</h3>
                 <input type="text" id="playerName" placeholder="Ismingiz" value="Player">
@@ -274,7 +330,7 @@
                     <div class="bets-count" id="teamXBets">0 bets</div>
                     <div class="bet-form">
                         <input type="number" id="xBetAmount" placeholder="Bet miqdori (UZS)" min="100" value="1000">
-                        <button onclick="placeBet('X')">Team X ga bet qo'yish</button>
+                        <button id="betXButton" onclick="placeBet('X')">Team X ga bet qo'yish</button>
                     </div>
                 </div>
                 
@@ -284,7 +340,7 @@
                     <div class="bets-count" id="teamOBets">0 bets</div>
                     <div class="bet-form">
                         <input type="number" id="oBetAmount" placeholder="Bet miqdori (UZS)" min="100" value="1000">
-                        <button onclick="placeBet('O')">Team O ga bet qo'yish</button>
+                        <button id="betOButton" onclick="placeBet('O')">Team O ga bet qo'yish</button>
                     </div>
                 </div>
             </div>
@@ -310,7 +366,7 @@
             </div>
             
             <div class="game-controls">
-                <button onclick="endGame()">O'yinni tugatish</button>
+                <button id="manualEndButton" onclick="endGame()" style="display: none;">O'yinni tugatish</button>
                 <button class="reset-btn" onclick="resetGame()">Yangi o'yin</button>
             </div>
         </div>
@@ -332,8 +388,100 @@
         firebase.initializeApp(firebaseConfig);
         const database = firebase.database();
 
+        // Timer sozlamalari
+        const BETTING_TIME = 3 * 60; // 3 daqiqa (180 soniya)
+        const BREAK_TIME = 30; // 30 soniya tanaffus
+        let currentTime = BETTING_TIME;
+        let isBettingPhase = true;
+        let timerInterval = null;
+
         let currentPlayer = "";
         let playerId = "";
+
+        // Timer ni boshlash
+        function startTimer() {
+            // Firebase dan timer ma'lumotlarini olish
+            database.ref('timer').on('value', (snapshot) => {
+                const timerData = snapshot.val();
+                if (timerData) {
+                    currentTime = timerData.currentTime;
+                    isBettingPhase = timerData.isBettingPhase;
+                    updateTimerDisplay();
+                }
+            });
+
+            // Har soniya timer ni yangilash
+            timerInterval = setInterval(() => {
+                currentTime--;
+                
+                if (currentTime <= 0) {
+                    // Vaqt tugadi
+                    if (isBettingPhase) {
+                        // Betting vaqti tugadi, o'yinni tugatish
+                        endGame();
+                        // Tanaffus boshlanishi
+                        currentTime = BREAK_TIME;
+                        isBettingPhase = false;
+                    } else {
+                        // Tanaffus tugadi, yangi raund boshlanishi
+                        startNewRound();
+                    }
+                }
+                
+                // Firebase ga yangi vaqtni saqlash
+                database.ref('timer').set({
+                    currentTime: currentTime,
+                    isBettingPhase: isBettingPhase
+                });
+                
+                updateTimerDisplay();
+            }, 1000);
+        }
+
+        // Timer displeyni yangilash
+        function updateTimerDisplay() {
+            const minutes = Math.floor(currentTime / 60);
+            const seconds = currentTime % 60;
+            const timerDisplay = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            document.getElementById('timerDisplay').textContent = timerDisplay;
+            document.getElementById('timerPhase').textContent = isBettingPhase ? 
+                'Betting davomiyligi' : 'Tanaffus';
+            
+            // Progress bar ni yangilash
+            const totalTime = isBettingPhase ? BETTING_TIME : BREAK_TIME;
+            const progressPercent = (currentTime / totalTime) * 100;
+            document.getElementById('progressFill').style.width = `${progressPercent}%`;
+            
+            // Keyingi raund vaqtini ko'rsatish
+            if (!isBettingPhase) {
+                document.getElementById('nextRoundInfo').style.display = 'block';
+                document.getElementById('nextRoundTime').textContent = timerDisplay;
+            } else {
+                document.getElementById('nextRoundInfo').style.display = 'none';
+            }
+            
+            // Bet tugmalarini faollashtirish/faolsizlashtirish
+            const betButtons = [document.getElementById('betXButton'), document.getElementById('betOButton')];
+            betButtons.forEach(button => {
+                button.disabled = !isBettingPhase;
+            });
+        }
+
+        // Yangi raund boshlash
+        function startNewRound() {
+            currentTime = BETTING_TIME;
+            isBettingPhase = true;
+            
+            // O'yinni qayta boshlash
+            resetGame();
+            
+            // Firebase ga yangi vaqtni saqlash
+            database.ref('timer').set({
+                currentTime: currentTime,
+                isBettingPhase: isBettingPhase
+            });
+        }
 
         // O'yinchi nomini kiritish
         function login() {
@@ -344,7 +492,7 @@
             }
             
             currentPlayer = playerName;
-            playerId = Date.now().toString(); // Soddalashtirilgan ID
+            playerId = Date.now().toString();
             
             // Firebase ga o'yinchi qo'shish
             database.ref('players/' + playerId).set({
@@ -357,7 +505,8 @@
             document.getElementById('loginSection').style.display = 'none';
             document.getElementById('gameContent').style.display = 'block';
             
-            // O'yin ma'lumotlarini yuklash
+            // Timer va o'yin ma'lumotlarini yuklash
+            startTimer();
             loadGameData();
         }
 
@@ -444,6 +593,11 @@
 
         // Bet qo'yish
         function placeBet(team) {
+            if (!isBettingPhase) {
+                alert('Betting vaqti tugadi! Keyingi raundni kuting.');
+                return;
+            }
+            
             const amountField = team === 'X' ? document.getElementById('xBetAmount') : document.getElementById('oBetAmount');
             const amount = parseInt(amountField.value);
             
@@ -485,7 +639,6 @@
         function endGame() {
             database.ref('gameState').once('value').then((snapshot) => {
                 if (snapshot.val() && snapshot.val().ended) {
-                    alert('O\'yin allaqachon tugatilgan!');
                     return;
                 }
                 
@@ -567,6 +720,20 @@
                 database.ref('players/' + playerId).update({
                     online: false,
                     lastActive: Date.now()
+                });
+            }
+            
+            if (timerInterval) {
+                clearInterval(timerInterval);
+            }
+        });
+
+        // Dastlabki timer sozlamalari
+        database.ref('timer').once('value').then((snapshot) => {
+            if (!snapshot.exists()) {
+                database.ref('timer').set({
+                    currentTime: BETTING_TIME,
+                    isBettingPhase: true
                 });
             }
         });
