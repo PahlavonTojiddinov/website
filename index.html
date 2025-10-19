@@ -22,7 +22,7 @@
         }
         
         .container {
-            max-width: 800px;
+            max-width: 900px;
             margin: 0 auto;
             background-color: rgba(0, 0, 0, 0.7);
             border-radius: 15px;
@@ -49,6 +49,20 @@
             border-radius: 10px;
             margin-bottom: 20px;
             font-size: 0.9rem;
+        }
+        
+        .wallet-section {
+            background: linear-gradient(135deg, #27ae60, #2ecc71);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .wallet-amount {
+            font-size: 2rem;
+            font-weight: bold;
+            margin: 10px 0;
         }
         
         .timer-section {
@@ -158,6 +172,7 @@
         
         input {
             background-color: rgba(255, 255, 255, 0.9);
+            color: #333;
         }
         
         button {
@@ -175,6 +190,14 @@
         
         button:hover:not(:disabled) {
             background-color: #27ae60;
+        }
+        
+        .withdraw-btn {
+            background-color: #e74c3c;
+        }
+        
+        .withdraw-btn:hover:not(:disabled) {
+            background-color: #c0392b;
         }
         
         .recent-bets {
@@ -285,6 +308,13 @@
             background-color: #e74c3c;
         }
         
+        .wallet-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+        }
+        
         @media (max-width: 600px) {
             .teams-container {
                 flex-direction: column;
@@ -297,6 +327,11 @@
             .timer-display {
                 font-size: 2rem;
             }
+            
+            .wallet-info {
+                flex-direction: column;
+                gap: 10px;
+            }
         }
     </style>
 </head>
@@ -307,6 +342,16 @@
             <div class="rules">
                 <p><strong>Qoidalar:</strong> Pastroq summa to'plagan g'olib - G'oliblar 2X pul yutadi - Teng bo'lsa Admin yutadi</p>
                 <p><strong>Vaqt:</strong> 3 daqiqa betting + 30 soniya tanaffus</p>
+                <p><strong>Wallet:</strong> Har bir o'yinchi 10,000 UZS bilan boshlanadi - Minimum 15,000 UZS yechish mumkin</p>
+            </div>
+            
+            <div id="walletSection" class="wallet-section" style="display: none;">
+                <h3>Mening Walletim</h3>
+                <div class="wallet-amount" id="walletAmount">10,000 UZS</div>
+                <div class="wallet-info">
+                    <div>Balance: <span id="balanceAmount">10,000</span> UZS</div>
+                    <button class="withdraw-btn" onclick="withdrawFunds()" id="withdrawButton">Pul yechish (15,000 UZS)</button>
+                </div>
             </div>
             
             <div class="timer-section">
@@ -394,15 +439,22 @@
         } catch (error) {
             console.log("Firebase allaqachon ishga tushirilgan");
         }
-        const database = firebase.database();
 
-        // Timer sozlamalari
-        const BETTING_TIME = 180; // 3 daqiqa
-        const BREAK_TIME = 30;    // 30 soniya
-        
+        // O'yin o'zgaruvchilari
+        const database = firebase.database();
+        const BETTING_TIME = 10; // 10 soniya (test uchun)
+        const BREAK_TIME = 5;    // 5 soniya (test uchun)
+
         let currentPlayer = "";
         let playerId = "";
         let isAdmin = false;
+        let myWallet = 10000;
+        let serverTimeInterval = null;
+        let currentTimer = {
+            currentTime: BETTING_TIME,
+            isBettingPhase: true,
+            isRunning: false
+        };
 
         // O'yinchi nomini kiritish
         function login() {
@@ -416,19 +468,25 @@
             playerId = generateId();
             isAdmin = playerName.toLowerCase() === 'admin';
             
+            console.log("Kirish:", currentPlayer, "Admin:", isAdmin);
+            
             // Firebase ga o'yinchi qo'shish
             database.ref('players/' + playerId).set({
                 name: playerName,
                 online: true,
                 isAdmin: isAdmin,
+                wallet: 10000,
                 lastActive: Date.now()
             });
             
             // UI ni yangilash
             document.getElementById('loginSection').style.display = 'none';
             document.getElementById('gameContent').style.display = 'block';
+            document.getElementById('walletSection').style.display = 'block';
             if (isAdmin) {
                 document.getElementById('manualEndButton').style.display = 'block';
+                // Admin kirganda darhol timer ni ishga tushirish
+                startTimer();
             }
             
             // O'yin ma'lumotlarini yuklash
@@ -443,22 +501,22 @@
             return 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         }
 
-        // Timer ni tekshirish va boshlash
+        // Timer ni tekshirish
         function checkTimer() {
             database.ref('timer').on('value', (snapshot) => {
                 const timerData = snapshot.val();
                 if (timerData) {
+                    currentTimer = timerData;
                     updateTimerDisplay(timerData);
-                    
-                    // Agar timer ishlamayotgan bo'lsa va admin bo'lsam, ishga tushiraman
-                    if (!timerData.isRunning && isAdmin) {
-                        startTimer();
-                    }
+                    console.log("Timer yangilandi:", timerData);
                 } else {
-                    // Timer ma'lumotlari yo'q, admin bo'lsam yarataman
-                    if (isAdmin) {
-                        startTimer();
-                    }
+                    console.log("Timer ma'lumotlari yo'q");
+                    // Agar timer yo'q bo'lsa, betting phase da deb hisoblaymiz
+                    updateTimerDisplay({
+                        currentTime: BETTING_TIME,
+                        isBettingPhase: true,
+                        isRunning: false
+                    });
                 }
             });
         }
@@ -478,7 +536,11 @@
             database.ref('timer').set(initialTimer);
             
             // Server timerini yangilash
-            setInterval(() => {
+            if (serverTimeInterval) {
+                clearInterval(serverTimeInterval);
+            }
+            
+            serverTimeInterval = setInterval(() => {
                 updateServerTimer();
             }, 1000);
         }
@@ -493,14 +555,16 @@
                     let newTime = timerData.currentTime - 1;
                     let newPhase = timerData.isBettingPhase;
                     
+                    console.log("Server timer:", newTime, "seconds left");
+                    
                     if (newTime <= 0) {
                         if (timerData.isBettingPhase) {
-                            // Betting vaqti tugadi
+                            console.log("Betting vaqti tugadi");
                             endGame();
                             newTime = BREAK_TIME;
                             newPhase = false;
                         } else {
-                            // Tanaffus tugadi
+                            console.log("Tanaffus tugadi, yangi raund");
                             resetGame();
                             newTime = BETTING_TIME;
                             newPhase = true;
@@ -514,6 +578,8 @@
                         lastUpdated: Date.now()
                     });
                 }
+            }).catch(error => {
+                console.log("Timer yangilashda xato:", error);
             });
         }
 
@@ -532,23 +598,34 @@
             const progressPercent = (timerData.currentTime / totalTime) * 100;
             document.getElementById('progressFill').style.width = `${progressPercent}%`;
             
-            // Keyingi raund vaqti
-            if (!timerData.isBettingPhase) {
-                document.getElementById('nextRoundInfo').style.display = 'block';
-                document.getElementById('nextRoundTime').textContent = timerDisplay;
-            } else {
-                document.getElementById('nextRoundInfo').style.display = 'none';
-            }
-            
             // Bet tugmalarini faollashtirish/faolsizlashtirish
+            const canBet = timerData.isBettingPhase && timerData.isRunning;
             const betButtons = [document.getElementById('betXButton'), document.getElementById('betOButton')];
             betButtons.forEach(button => {
-                button.disabled = !timerData.isBettingPhase;
+                button.disabled = !canBet;
+                if (!canBet) {
+                    button.title = "Betting vaqti emas!";
+                } else {
+                    button.title = "Bet qo'yish";
+                }
             });
+            
+            console.log("Bet qo'yish mumkin:", canBet);
         }
 
         // O'yin ma'lumotlarini yuklash
         function loadGameData() {
+            // O'zimning wallet ma'lumotlarim
+            database.ref('players/' + playerId + '/wallet').on('value', (snapshot) => {
+                const walletAmount = snapshot.val() || 10000;
+                myWallet = walletAmount;
+                document.getElementById('walletAmount').textContent = formatCurrency(walletAmount) + ' UZS';
+                document.getElementById('balanceAmount').textContent = formatCurrency(walletAmount);
+                
+                // Withdraw tugmasini faollashtirish/faolsizlashtirish
+                document.getElementById('withdrawButton').disabled = walletAmount < 15000;
+            });
+
             // Team X ma'lumotlari
             database.ref('teamX').on('value', (snapshot) => {
                 const data = snapshot.val() || { total: 0, bets: 0 };
@@ -603,7 +680,7 @@
                     if (player.online) {
                         const userBadge = document.createElement('div');
                         userBadge.className = player.isAdmin ? 'user-badge admin-badge' : 'user-badge';
-                        userBadge.textContent = player.name + (player.isAdmin ? ' 👑' : '');
+                        userBadge.textContent = player.name + (player.isAdmin ? ' 👑' : '') + ' (' + formatCurrency(player.wallet || 10000) + ' UZS)';
                         userList.appendChild(userBadge);
                     }
                 });
@@ -632,30 +709,44 @@
 
         // Bet qo'yish
         function placeBet(team) {
-            database.ref('timer').once('value').then((timerSnapshot) => {
-                const timerData = timerSnapshot.val();
-                if (!timerData || !timerData.isBettingPhase) {
-                    alert('Betting vaqti tugadi! Keyingi raundni kuting.');
-                    return;
-                }
-                
-                const amountField = team === 'X' ? document.getElementById('xBetAmount') : document.getElementById('oBetAmount');
-                const amount = parseInt(amountField.value);
-                
-                if (isNaN(amount) || amount < 100) {
-                    alert('Iltimos, to\'g\'ri miqdor kiriting (minimum 100 UZS)!');
-                    return;
-                }
-                
-                // Firebase ga bet qo'shish
-                const betId = 'bet_' + Date.now();
-                database.ref('bets/' + betId).set({
-                    player: currentPlayer,
-                    amount: amount,
-                    team: team,
-                    status: 'Pending',
-                    timestamp: Date.now()
-                });
+            console.log("Bet qo'yish urinilyapti:", team);
+            
+            // Timer ma'lumotlarini tekshirish
+            if (!currentTimer.isBettingPhase || !currentTimer.isRunning) {
+                alert('Betting vaqti tugadi! Keyingi raundni kuting.');
+                return;
+            }
+            
+            const amountField = team === 'X' ? document.getElementById('xBetAmount') : document.getElementById('oBetAmount');
+            const amount = parseInt(amountField.value);
+            
+            if (isNaN(amount) || amount < 100) {
+                alert('Iltimos, to\'g\'ri miqdor kiriting (minimum 100 UZS)!');
+                return;
+            }
+            
+            if (amount > myWallet) {
+                alert('Sizda yetarli mablag\' yo\'q! Sizda: ' + myWallet + ' UZS');
+                return;
+            }
+            
+            console.log("Bet qo'yilmoqda:", amount, "UZS, Team:", team);
+            
+            // Wallet dan pulni ayiramiz
+            const newWalletAmount = myWallet - amount;
+            database.ref('players/' + playerId + '/wallet').set(newWalletAmount);
+            
+            // Firebase ga bet qo'shish
+            const betId = 'bet_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            database.ref('bets/' + betId).set({
+                player: currentPlayer,
+                amount: amount,
+                team: team,
+                status: 'Pending',
+                timestamp: Date.now(),
+                playerId: playerId
+            }).then(() => {
+                console.log("Bet muvaffaqiyatli qo'shildi");
                 
                 // Team summasini yangilash
                 const teamRef = team === 'X' ? 'teamX' : 'teamO';
@@ -674,6 +765,11 @@
                 });
                 
                 amountField.value = '1000';
+                alert('Bet muvaffaqiyatli qo\'yildi: ' + amount + ' UZS Team ' + team);
+                
+            }).catch(error => {
+                console.log("Bet qo'shishda xato:", error);
+                alert('Bet qo\'yishda xato: ' + error.message);
             });
         }
 
@@ -704,7 +800,7 @@
                         winAmount: winAmount
                     });
                     
-                    // Betlarni yangilash
+                    // Betlarni yangilash va g'oliblarga to'lov
                     database.ref('bets').once('value').then((betsSnapshot) => {
                         const bets = betsSnapshot.val() || {};
                         Object.keys(bets).forEach(betId => {
@@ -715,6 +811,11 @@
                                 status = 'Lost';
                             } else if (bet.team === winner) {
                                 status = 'Won';
+                                // G'olibga to'lov
+                                const winAmount = bet.amount * 2;
+                                database.ref('players/' + bet.playerId + '/wallet').transaction(current => {
+                                    return (current || 10000) + winAmount;
+                                });
                             }
                             
                             database.ref('bets/' + betId + '/status').set(status);
@@ -754,6 +855,20 @@
             });
         }
 
+        // Pul yechish
+        function withdrawFunds() {
+            if (myWallet < 15000) {
+                alert('Minimum 15,000 UZS yechish mumkin!');
+                return;
+            }
+            
+            if (confirm('15,000 UZS yechib olishni tasdiqlaysizmi?')) {
+                const newAmount = myWallet - 15000;
+                database.ref('players/' + playerId + '/wallet').set(newAmount);
+                alert('15,000 UZS muvaffaqiyatli yechib olindi!');
+            }
+        }
+
         // Pul formati
         function formatCurrency(amount) {
             return amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -767,7 +882,27 @@
                     lastActive: Date.now()
                 });
             }
+            
+            if (serverTimeInterval) {
+                clearInterval(serverTimeInterval);
+            }
         });
+
+        // Debug ma'lumotlari
+        function showDebugInfo() {
+            console.log("=== DEBUG INFO ===");
+            console.log("Player:", currentPlayer);
+            console.log("Player ID:", playerId);
+            console.log("Admin:", isAdmin);
+            console.log("Wallet:", myWallet);
+            console.log("Timer:", currentTimer);
+            console.log("Betting phase:", currentTimer.isBettingPhase);
+            console.log("Timer running:", currentTimer.isRunning);
+            console.log("==================");
+        }
+
+        // Har 5 soniyada debug ma'lumotlarini ko'rsatish
+        setInterval(showDebugInfo, 5000);
 
         // Dastlabki sozlamalar
         window.addEventListener('load', () => {
